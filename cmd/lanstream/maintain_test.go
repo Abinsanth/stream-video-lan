@@ -251,3 +251,66 @@ func TestUsageListsMaintenanceFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestUninstallRemovesOnlyTheInstallerPathLines(t *testing.T) {
+	setVersion(t, "0.1.0")
+	fakeExe(t)
+	fakeConfig(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	zshrc := filepath.Join(home, ".zshrc")
+	os.WriteFile(zshrc, []byte("alias ll='ls -l'\n"+pathMarker+"\nexport PATH=\"$HOME/.local/bin:$PATH\"\nexport EDITOR=vim\n"), 0o600)
+	fish := filepath.Join(home, ".config", "fish", "conf.d", "lanstream.fish")
+	os.MkdirAll(filepath.Dir(fish), 0o755)
+	os.WriteFile(fish, []byte(pathMarker+"\nfish_add_path /x/bin\n"), 0o644)
+	untouched := filepath.Join(home, ".bashrc")
+	os.WriteFile(untouched, []byte("export PATH=\"$HOME/.local/bin:$PATH\"\n"), 0o644) // the user's own line
+
+	var out bytes.Buffer
+	if code := run(ctx, []string{"--uninstall"}, strings.NewReader("y\n"), &out, &out); code != 0 {
+		t.Fatal(out.String())
+	}
+	if b, _ := os.ReadFile(zshrc); string(b) != "alias ll='ls -l'\nexport EDITOR=vim\n" {
+		t.Fatalf(".zshrc = %q", b)
+	}
+	if fi, _ := os.Stat(zshrc); fi.Mode().Perm() != 0o600 {
+		t.Fatal("permissions of .zshrc changed")
+	}
+	if _, err := os.Stat(fish); !os.IsNotExist(err) {
+		t.Fatal("lanstream.fish left behind")
+	}
+	if b, _ := os.ReadFile(untouched); string(b) != "export PATH=\"$HOME/.local/bin:$PATH\"\n" {
+		t.Fatal("touched a PATH line the installer didn't write")
+	}
+	for _, want := range []string{"the PATH line in " + zshrc, fish} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("didn't list %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestUninstallDeclinedLeavesRCAlone(t *testing.T) {
+	setVersion(t, "0.1.0")
+	fakeExe(t)
+	fakeConfig(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	zshrc := filepath.Join(home, ".zshrc")
+	body := "a\n" + pathMarker + "\nexport PATH=\"$HOME/.local/bin:$PATH\"\n"
+	os.WriteFile(zshrc, []byte(body), 0o644)
+	var out bytes.Buffer
+	run(ctx, []string{"--uninstall"}, strings.NewReader("n\n"), &out, &out)
+	if b, _ := os.ReadFile(zshrc); string(b) != body {
+		t.Fatal("changed after n")
+	}
+}
+
+func TestInstallScriptUsesTheSameMarker(t *testing.T) {
+	b, err := os.ReadFile("../../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `marker="`+pathMarker+`"`) {
+		t.Fatal("install.sh and --uninstall disagree on the PATH marker")
+	}
+}
