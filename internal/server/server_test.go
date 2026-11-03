@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Abinsanth/stream-video-lan/internal/library"
+	"github.com/Abinsanth/stream-video-lan/internal/viewers"
 )
 
 type testServer struct {
@@ -24,6 +27,12 @@ type testServer struct {
 // newTestServer writes files (relPath → contents) under a fresh shared folder and serves it.
 // The folder sits inside its own temp dir, so tests can put "outside" files next to it.
 func newTestServer(t *testing.T, files map[string]string) *testServer {
+	t.Helper()
+	return newTrackedServer(t, nil, files)
+}
+
+// newTrackedServer is newTestServer with a viewer tracker attached (tr may be nil).
+func newTrackedServer(t *testing.T, tr *viewers.Tracker, files map[string]string) *testServer {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "share")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -42,7 +51,7 @@ func newTestServer(t *testing.T, files map[string]string) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(New(lib).Handler())
+	ts := httptest.NewServer(New(lib, tr).Handler())
 	t.Cleanup(ts.Close)
 	return &testServer{ts, root}
 }
@@ -297,5 +306,39 @@ func TestFIFOSwappedInDoesNotHang(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 404 {
 		t.Fatal(res.StatusCode)
+	}
+}
+
+func TestRangeStart(t *testing.T) {
+	cases := map[string]int64{"": 0, "bytes=500-": 500, "bytes=500-999": 500, "bytes=-100": 900,
+		"bytes=-5000": 0, "bytes=10-20,30-40": 10, "items=1-2": 0, "bytes=x-": 0}
+	for h, want := range cases {
+		if got := rangeStart(h, 1000); got != want {
+			t.Errorf("rangeStart(%q) = %d, want %d", h, got, want)
+		}
+	}
+}
+
+func TestVideoRequestsAreTracked(t *testing.T) {
+	tr := viewers.New(nil)
+	ts := newTrackedServer(t, tr, map[string]string{"m.mp4": "0123456789"})
+	get(t, ts.URL+"/v/m.mp4", "Range", "bytes=5-6")
+	got := tr.Snapshot()
+	if len(got) != 1 || got[0].RelPath != "m.mp4" || got[0].Percent != 70 || got[0].IP != "127.0.0.1" {
+		t.Fatal(got)
+	}
+	do(t, "HEAD", ts.URL+"/v/m.mp4") // HEAD neither adds a viewer nor moves the position
+	if s := tr.Snapshot(); len(s) != 1 || s[0].Percent != 70 {
+		t.Fatal(s)
+	}
+}
+
+func TestBaseURLWithoutHost(t *testing.T) {
+	r := httptest.NewRequest("GET", "/playlist.m3u8", nil)
+	r.Host = ""
+	addr := &net.TCPAddr{IP: net.IPv4(192, 168, 1, 5), Port: 8080}
+	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, addr))
+	if got := baseURL(r); got != "http://192.168.1.5:8080" {
+		t.Fatal(got)
 	}
 }
