@@ -13,7 +13,7 @@ func TestHelpModalShowsLinksAndTips(t *testing.T) {
 	m = typeText(m, "/h")
 	m = press(m, "enter")
 	v := view(m)
-	for _, s := range []string{"http://10.0.0.2:8080/playlist.m3u8", "Open Network Stream", "click Allow", "same Wi-Fi", "lanstream dev", "/f", "/q"} {
+	for _, s := range []string{"http://10.0.0.2:8080/playlist.m3u8", "Open Network Stream", "click Allow", "same Wi-Fi", "lanstream dev", "/stop", "/q"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("help missing %q in\n%s", s, v)
 		}
@@ -188,4 +188,166 @@ func TestClicksWhileStoppingDoNotCrash(t *testing.T) {
 	}
 	m = runCmds(m)
 	_ = view(m)
+}
+
+// Bubble Tea draws one last frame after the model asks to quit; every way out must survive it.
+func TestLastFrameAfterQuittingDoesNotCrash(t *testing.T) {
+	drawAfter := func(name string, m Model, cmd tea.Cmd) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("%s: drawing the last frame panicked: %v", name, r)
+			}
+		}()
+		for i := 0; i < 5 && cmd != nil; i++ { // follow stop → stoppedMsg → quit
+			msg := cmd()
+			if _, ok := msg.(tea.QuitMsg); ok {
+				break
+			}
+			var nm tea.Model
+			nm, cmd = m.Update(msg)
+			m = nm.(Model)
+			_ = view(m)
+		}
+		_ = view(m)
+	}
+
+	m, _ := servingModel(t, vid("a.mp4", 1))
+	m = typeText(m, "/q")
+	m, cmd := updateCmd(m, "enter")
+	drawAfter("/q", m, cmd)
+
+	m, _ = servingModel(t, vid("a.mp4", 1))
+	m, cmd = updateCmd(m, "ctrl+c")
+	drawAfter("ctrl+c", m, cmd)
+
+	m, _ = servingModel(t, vid("a.mp4", 1))
+	m.deps.Tracker.Begin("ip", "a.mp4", 1, 0)
+	m = press(m, "ctrl+c")
+	m, cmd = updateCmd(m, "y")
+	drawAfter("ctrl+c then y", m, cmd)
+
+	m, _ = servingModel(t, vid("a.mp4", 1))
+	m = typeText(m, "/f")
+	m, cmd = updateCmd(m, "enter")
+	drawAfter("/f", m, cmd)
+
+	p, _ := pickerModel(t, nil)
+	p, cmd = updateCmd(p, "q")
+	drawAfter("picker q", p, cmd)
+}
+
+func TestPickerSlashHOpensHelp(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = selectRow(m, "Browse…")
+	m = press(m, "enter", "esc") // the owner's path: browse, then back
+	m = typeText(m, "/h")
+	m = press(m, "enter")
+	if !strings.Contains(view(m), "Commands") {
+		t.Fatal(view(m))
+	}
+	if strings.Contains(view(m), "Playlist links") {
+		t.Fatal("playlist links shown while nothing is shared")
+	}
+}
+
+func TestPickerSlashQQuits(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = typeText(m, "/q")
+	if m, cmd := updateCmd(m, "enter"); !quits(m, cmd) {
+		t.Fatal("/q did not quit the picker")
+	}
+}
+
+func TestPickerPlainQDoesNotQuit(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	if m, cmd := updateCmd(m, "q"); quits(m, cmd) {
+		t.Fatal("a bare q quit the picker")
+	}
+}
+
+func TestBrowseSlashOpensBar(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = selectRow(m, "Browse…")
+	m = press(m, "enter")
+	m = typeText(m, "/h")
+	m = press(m, "enter")
+	if !strings.Contains(view(m), "Commands") {
+		t.Fatal(view(m))
+	}
+}
+
+func TestSlashInTypePathIsText(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = selectRow(m, "Type a path…")
+	m = press(m, "enter")
+	m = typeText(m, "/tmp/x")
+	if m.bar.focused || m.picker.input.Value() != "/tmp/x" {
+		t.Fatalf("bar=%v value=%q", m.bar.focused, m.picker.input.Value())
+	}
+}
+
+func TestStopOnPickerSaysNothingShared(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	for _, c := range []string{"/stop", "/qr"} {
+		m = typeText(m, c)
+		m = press(m, "enter")
+		if !strings.Contains(view(m), "Nothing is being shared yet.") {
+			t.Fatalf("%s: %s", c, view(m))
+		}
+	}
+}
+
+func TestStopReturnsToPicker(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 1))
+	fs := m.share.(*fakeShare)
+	m = typeText(m, "/stop")
+	m, cmd := updateCmd(m, "enter")
+	m = update(m, cmd())
+	if m.screen != screenPicker || m.share != nil || fs.stops != 1 {
+		t.Fatal(m.screen, fs.stops)
+	}
+}
+
+func TestStopConfirms(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 10))
+	fs := m.share.(*fakeShare)
+	m.deps.Tracker.Begin("ip", "a.mp4", 10, 0)
+	m = typeText(m, "/stop")
+	m = press(m, "enter")
+	if !strings.Contains(view(m), "1 person is watching. Stop anyway? (y/n)") {
+		t.Fatal(view(m))
+	}
+	m = press(m, "n")
+	if m.screen != screenServing || m.share == nil || fs.stops != 0 {
+		t.Fatal("n did not keep sharing")
+	}
+}
+
+func TestHelpListsStopAndFitsWidth(t *testing.T) {
+	m, _ := servingModel(t)
+	m = typeText(m, "/h")
+	m = press(m, "enter")
+	v := view(m)
+	if !strings.Contains(v, "/stop stop sharing") || !strings.Contains(v, "/qr") {
+		t.Fatal(v)
+	}
+	for _, line := range strings.Split(v, "\n") {
+		if strings.HasSuffix(line, "…") {
+			t.Fatalf("help line cut off at 80 columns: %q", line)
+		}
+	}
+}
+
+func TestHelpFromPickerShowsPickerKeys(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = typeText(m, "/h")
+	m = press(m, "enter")
+	v := view(m)
+	if !strings.Contains(v, "enter select") || strings.Contains(v, "switch tabs") || strings.Contains(v, "a video") {
+		t.Fatal(v)
+	}
+	if strings.Contains(v, "\n\n\n") {
+		t.Fatal("double blank line in help")
+	}
 }

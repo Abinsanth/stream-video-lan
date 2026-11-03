@@ -78,12 +78,6 @@ func (m *Model) fixScroll() {
 }
 
 func (m Model) servingKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.bar.focused {
-		return m.barKey(k)
-	}
-	if k.Text == "/" {
-		return m.focusBar()
-	}
 	s := &m.serving
 	switch k.String() {
 	case "esc":
@@ -199,7 +193,30 @@ func (m Model) tabsLine() string {
 	} else {
 		watchers = titleStyle.Render("[ Viewers (" + strconv.Itoa(len(m.serving.watchers)) + ") ]")
 	}
-	return videos + "  " + watchers
+	tabs := videos + "  " + watchers
+	// The sharing status sits at the right end; it is the first thing to go when space is short.
+	room := m.width - lipgloss.Width(tabs) - 2
+	if room < 10 {
+		return tabs
+	}
+	status := fit(m.statusText(), room)
+	return tabs + strings.Repeat(" ", room-lipgloss.Width(status)+1) + statusStyle.Render(status)
+}
+
+// statusText is the one place that says the share is live, who is on it, and whether the
+// computer is being kept awake.
+func (m Model) statusText() string {
+	s := "● sharing · "
+	switch n := len(m.serving.watchers); n {
+	case 0:
+		s += "nobody watching"
+	default:
+		s += strconv.Itoa(n) + " watching"
+	}
+	if m.deps.Keeper.Held() {
+		s += " · keeping awake"
+	}
+	return s
 }
 
 func (m Model) videoRows(n int) []string {
@@ -226,44 +243,52 @@ func (m Model) videoRows(n int) []string {
 
 func (m Model) viewerRows(n int) []string {
 	watchers := m.serving.watchers
-	held := m.deps.Keeper.Held() && n > 0
-	room := n
-	if held {
-		room-- // last row says the computer is being kept awake
-	}
 	var rows []string
 	if len(watchers) == 0 {
 		rows = append(rows, "  "+dimStyle.Render("Nobody is watching right now."))
 	}
 	shown := watchers
-	if len(watchers) > room {
-		shown = watchers[:max(room-1, 0)]
+	if len(watchers) > n {
+		shown = watchers[:max(n-1, 0)]
 	}
 	nameW := max(m.width-26, 0)
 	for _, v := range shown {
 		rows = append(rows, "  "+pad(v.IP, 15)+" "+pad(displayName(v.RelPath), nameW)+" ~"+strconv.Itoa(v.Percent)+"%")
 	}
-	if more := len(watchers) - len(shown); more > 0 && room > 0 {
+	if more := len(watchers) - len(shown); more > 0 && n > 0 {
 		rows = append(rows, "  "+dimStyle.Render("+"+strconv.Itoa(more)+" more"))
-	}
-	if held {
-		for len(rows) < n-1 {
-			rows = append(rows, "")
-		}
-		rows = append(rows[:n-1], "  "+dimStyle.Render("Keeping this computer awake while someone watches"))
 	}
 	return rows
 }
 
-// barLine is the bottom row: the command being typed, or the latest message and a help hint.
+// barLine is the bottom row of every screen: the command being typed; otherwise the latest
+// message (flash, then update notice) with a help hint; otherwise what the keys do here.
 func (m Model) barLine() string {
 	if m.bar.focused {
 		return " " + m.bar.input.View()
 	}
-	hint := "/h help"
 	msg := m.flash
 	if msg == "" && m.notice != "" {
 		msg = noticeStyle.Render(m.notice)
 	}
+	if msg == "" {
+		return " " + dimStyle.Render(fit(m.hints(), max(m.width-1, 0)))
+	}
+	hint := "/h help"
 	return " " + pad(msg, max(m.width-2-len(hint), 0)) + dimStyle.Render(hint)
+}
+
+// hints says what the keys do on the current screen.
+func (m Model) hints() string {
+	switch {
+	case m.screen == screenServing && m.serving.tab == tabViewers:
+		return "tab videos · /stop · /qr · /h help"
+	case m.screen == screenServing:
+		return "↑↓ select · enter copy link · tab viewers · /stop · /qr · /h help"
+	case m.picker.mode == pickBrowse:
+		return "enter open · ⌫ up · s share this folder · esc back · /h help"
+	case m.picker.mode == pickType:
+		return "tab completes · enter shares · esc back (then /h help)"
+	}
+	return "↑↓ move · enter select · /h help · /q quit"
 }

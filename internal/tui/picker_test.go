@@ -2,12 +2,15 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Abinsanth/stream-video-lan/internal/config"
 )
@@ -69,13 +72,6 @@ func TestPickerStartErrorStays(t *testing.T) {
 	m = press(m, "enter")
 	if m.screen != screenPicker || !strings.Contains(view(m), "ports 8080-8099 are all busy") {
 		t.Fatal(view(m))
-	}
-}
-
-func TestPickerQQuits(t *testing.T) {
-	m, _ := pickerModel(t, nil)
-	if m, cmd := updateCmd(m, "q"); !quits(m, cmd) {
-		t.Fatal("q did not quit")
 	}
 }
 
@@ -157,7 +153,7 @@ func TestTypePathPasteDraggedFolder(t *testing.T) {
 	}
 }
 
-func TestTypePathQIsText(t *testing.T) {
+func TestTypePathQIsText(t *testing.T) { // kept: q is text while typing a path
 	m, _ := pickerModel(t, nil)
 	m = selectRow(m, "Type a path…")
 	m = press(m, "enter")
@@ -192,5 +188,72 @@ func TestPickerScrollsOnTinyHeight(t *testing.T) {
 	m = selectRow(m, "Type a path…")
 	if !strings.Contains(view(m), "Type a path") {
 		t.Fatal(view(m))
+	}
+}
+
+// With no recent folders the picker list is: Shortcuts, ~/Movies, ~/Downloads, divider,
+// Browse…, Type a path…, drawn from screen row 2.
+func TestPickerClickSelects(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = click(m, 5, 4)
+	if !strings.Contains(m.selectedLabel(), "Downloads") {
+		t.Fatal(m.selectedLabel())
+	}
+}
+
+func TestPickerDoubleClickOpens(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = click(m, 5, 6)
+	m = click(m, 5, 6) // Browse…
+	if m.picker.mode != pickBrowse {
+		t.Fatal("double-click on Browse… did not open it")
+	}
+	m = selectRow(m, "Movies")
+	y := 2 + m.picker.bcursor // no scrolling at this size
+	m = advance(m, time.Second)
+	m = click(m, 5, y)
+	m = click(m, 5, y)
+	if !strings.HasSuffix(m.picker.cwd, "Movies") {
+		t.Fatal(m.picker.cwd)
+	}
+}
+
+func TestPickerDoubleClickHeading(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	started := false
+	m = withStart(m, func(d string) (Share, error) { started = true; return &fakeShare{root: d}, nil })
+	before := m.selectedLabel()
+	m = click(m, 5, 2)
+	m = click(m, 5, 2) // "Shortcuts" heading
+	m = click(m, 5, 5)
+	m = click(m, 5, 5) // divider
+	if started || m.picker.mode != pickList || m.selectedLabel() != before {
+		t.Fatal("clicking a heading or divider did something")
+	}
+}
+
+func TestPickerScrolledDoubleClickOpensClickedRow(t *testing.T) {
+	m, home := pickerModel(t, nil)
+	for i := 0; i < 32; i++ {
+		os.Mkdir(filepath.Join(home, "Movies", fmt.Sprintf("d%02d", i)), 0o755)
+	}
+	m = update(m, tea.WindowSizeMsg{Width: 80, Height: 15})
+	m = selectRow(m, "Browse…")
+	m = press(m, "enter")
+	m = selectRow(m, "Movies")
+	m = press(m, "enter")
+	for i := 0; i < 20; i++ {
+		m = press(m, "down")
+	}
+	row := func(y int) string { return strings.TrimSpace(ansi.Strip(strings.Split(view(m), "\n")[y])) }
+	target := strings.TrimPrefix(row(2), "> ")
+	m = advance(m, time.Second)
+	m = click(m, 5, 2)
+	if got := strings.TrimPrefix(row(2), "> "); got != target {
+		t.Fatalf("list jumped on click: row 2 was %q, now %q", target, got)
+	}
+	m = click(m, 5, 2)
+	if !strings.HasSuffix(m.picker.cwd, target) {
+		t.Fatalf("double-click on %q opened %q", target, m.picker.cwd)
 	}
 }
