@@ -119,3 +119,10 @@ func percent(pos, size int64) int {
 	}
 	return int(min(max(pos*100/size, 0), 100))
 }
+
+// Reset forgets every viewer (used when switching to a different folder).
+func (t *Tracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	clear(t.entries)
+}

@@ -16,5 +16,5 @@ func main() {
 		<-ctx.Done()
 		stop()
 	}()
-	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

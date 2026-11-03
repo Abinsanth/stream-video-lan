@@ -29,17 +29,21 @@ Usage:
   lanstream                   pick a folder to share
   lanstream <folder>          share this folder
   lanstream --port <n>        use port n (default 8080)
+  lanstream --update          update to the latest version
+  lanstream --uninstall       remove lanstream and its settings
   lanstream --version         print the version
   lanstream --help, -h        show this help
 `
 
 // run is the whole program; main only wires it to the OS. It returns the exit code.
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("lanstream", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {}
 	port := fs.Int("port", netinfo.DefaultPort, "")
 	showVersion := fs.Bool("version", false, "")
+	doUpdate := fs.Bool("update", false, "")
+	doUninstall := fs.Bool("uninstall", false, "")
 
 	folders, err := parseInterleaved(fs, args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -53,6 +57,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *showVersion {
 		fmt.Fprintf(stdout, "lanstream %s\n", version.Version)
 		return 0
+	}
+	if *doUpdate {
+		return runUpdate(ctx, stdin, stdout, stderr)
+	}
+	if *doUninstall {
+		return runUninstall(stdin, stdout, stderr)
 	}
 	if *port < 0 || *port > 65535 {
 		fmt.Fprintf(stderr, "lanstream: invalid port %d (use 0-65535)\n", *port)
@@ -130,6 +140,8 @@ func runTUI(ctx context.Context, folder string, opt share.Options, stderr io.Wri
 		GOOS:          runtime.GOOS,
 		InitialFolder: folder,
 		Version:       version.Version,
+		CheckUpdate:   updater.Latest,
+		UpdateNotes:   updater.Notes,
 	}
 	if err := tui.Run(ctx, deps); err != nil {
 		fmt.Fprintf(stderr, "lanstream: %v\n", err)

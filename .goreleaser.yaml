@@ -1,0 +1,23 @@
+version: 2
+project_name: lanstream
+builds:
+  - main: ./cmd/lanstream
+    binary: lanstream
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/Abinsanth/stream-video-lan/internal/version.Version={{.Version}}
+archives:
+  - formats: [tar.gz]
+    name_template: "lanstream_{{ .Os }}_{{ .Arch }}"
+    files: [none*]
+checksum:
+  name_template: checksums.txt
+changelog:
+  use: git
+  sort: asc
+release:
+  draft: true
+  replace_existing_draft: true

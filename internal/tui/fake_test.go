@@ -234,3 +234,25 @@ func isQuit(cmd tea.Cmd) bool {
 }
 
 func view(m Model) string { return m.View().Content }
+
+// quits runs cmd, feeds its message back into the model, and reports whether the model then
+// quits (directly, or after a background stop).
+func quits(m Model, cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	switch msg := msg.(type) {
+	case tea.QuitMsg:
+		return true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if quits(m, c) {
+				return true
+			}
+		}
+		return false
+	}
+	nm, next := m.Update(msg)
+	return isQuit(next) || quits(nm.(Model), next)
+}

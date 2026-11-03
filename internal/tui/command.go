@@ -55,6 +55,8 @@ func (m Model) runCommand(line string) (tea.Model, tea.Cmd) {
 	case "/h", "/help":
 		m.modal = modalHelp
 		return m, nil
+	case "/update":
+		return m.openUpdate()
 	case "/f", "/folder":
 		return m.confirmOr(switchFolder)
 	case "/q", "/quit":
@@ -67,13 +69,10 @@ func (m Model) runCommand(line string) (tea.Model, tea.Cmd) {
 // switchFolder stops sharing and goes back to the picker (with an up-to-date recent list).
 func switchFolder(m Model) (Model, tea.Cmd) {
 	if m.share != nil {
-		m.share.Stop()
-		m.share = nil
+		return m.stopShare(afterPicker)
 	}
-	m.screen = screenPicker
-	m.modal = modalNone
-	m.picker = newPicker(m.deps)
-	return m, m.picker.countCmds()
+	nm, cmd := m.afterStop(afterPicker)
+	return nm.(Model), cmd
 }
 
 func (m Model) modalKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -100,6 +99,8 @@ func (m Model) modalView() string {
 	switch m.modal {
 	case modalConfirm:
 		return "\n " + titleStyle.Render(m.confirmText)
+	case modalUpdate:
+		return m.updateView()
 	case modalLink:
 		out := []string{"", " " + titleStyle.Render("Copy this link") + " (the clipboard isn't available here):", ""}
 		for _, l := range strings.Split(ansi.Hardwrap(m.linkText, max(m.width-4, 10), true), "\n") {
@@ -110,7 +111,7 @@ func (m Model) modalView() string {
 	lines := []string{
 		" " + titleStyle.Render("lanstream help"),
 		"",
-		" Commands  /h help · /f share another folder · /q quit (Ctrl-C too)",
+		" Commands  /h help · /f another folder · /update · /q quit (or Ctrl-C)",
 		" Keys      tab switch tabs · ↑ ↓ pgup pgdown home end move",
 		"           enter or double-click a video: copy its link",
 		"           double-click the top line: copy the playlist link",

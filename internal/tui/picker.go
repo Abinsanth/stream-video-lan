@@ -58,10 +58,11 @@ type pickerState struct {
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	dimStyle   = lipgloss.NewStyle().Faint(true)
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	selStyle   = lipgloss.NewStyle().Reverse(true)
+	titleStyle  = lipgloss.NewStyle().Bold(true)
+	dimStyle    = lipgloss.NewStyle().Faint(true)
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	selStyle    = lipgloss.NewStyle().Reverse(true)
+	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
 func newPicker(d Deps) pickerState {
@@ -82,7 +83,7 @@ func pickerRows(d Deps) []pickRow {
 	if recent := d.Config.ExistingRecent(); len(recent) > 0 {
 		rows = append(rows, pickRow{kind: rowHeading, label: "Recent"})
 		for _, dir := range recent {
-			rows = append(rows, pickRow{kind: rowRecent, label: tildePath(dir, d.Home), dir: dir})
+			rows = append(rows, pickRow{kind: rowRecent, label: displayName(tildePath(dir, d.Home)), dir: dir})
 		}
 	}
 	names := []string{"Movies", "Downloads", "Desktop"}
@@ -93,7 +94,7 @@ func pickerRows(d Deps) []pickRow {
 	for _, n := range names {
 		dir := filepath.Join(d.Home, n)
 		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			shortcuts = append(shortcuts, pickRow{kind: rowShortcut, label: tildePath(dir, d.Home), dir: dir})
+			shortcuts = append(shortcuts, pickRow{kind: rowShortcut, label: displayName(tildePath(dir, d.Home)), dir: dir})
 		}
 	}
 	if len(shortcuts) > 0 {
@@ -166,6 +167,8 @@ func (m Model) pickerKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		p.cursor = nextSelectable(p.rows, p.cursor, 1)
 	case "q":
 		return m.quitNow()
+	case "esc":
+		m.notice = ""
 	case "enter":
 		switch r := p.rows[p.cursor]; r.kind {
 		case rowRecent, rowShortcut:
@@ -370,12 +373,12 @@ func (m Model) pickerView() string {
 	sel := 0
 	switch p.mode {
 	case pickBrowse:
-		title = "Browse: " + tildePath(p.cwd, m.deps.Home)
+		title = "Browse: " + displayName(tildePath(p.cwd, m.deps.Home))
 		if c := p.countText(p.cwd); c != "" {
 			title = pad(title, m.width-14) + " " + c
 		}
 		for i, name := range p.entries {
-			lines = append(lines, m.pickLine(name, "", i == p.bcursor))
+			lines = append(lines, m.pickLine(displayName(name), "", i == p.bcursor))
 		}
 		sel = p.bcursor
 		footer = "enter open · backspace up · s share this folder · esc back"
@@ -404,9 +407,9 @@ func (m Model) pickerView() string {
 		sel = p.cursor
 		footer = "↑↓ move · enter select · q quit"
 	}
-	avail := m.height - 5
+	avail := max(m.height-5, 1) // always keep at least the selected row on screen
 	start := listWindow(len(lines), sel, avail)
-	if avail > 0 && len(lines) > avail {
+	if len(lines) > avail {
 		lines = lines[start : start+avail]
 	}
 	out := []string{" " + titleStyle.Render(title), ""}
@@ -414,6 +417,9 @@ func (m Model) pickerView() string {
 	out = append(out, "")
 	if p.err != "" {
 		out = append(out, " "+errStyle.Render(p.err))
+	}
+	if m.notice != "" {
+		out = append(out, " "+noticeStyle.Render(m.notice))
 	}
 	out = append(out, " "+dimStyle.Render(footer))
 	return strings.Join(out, "\n")
