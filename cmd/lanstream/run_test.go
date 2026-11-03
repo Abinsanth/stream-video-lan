@@ -59,34 +59,34 @@ func httpGet(t *testing.T, url string) string {
 
 func TestRunVersionAndHelp(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := run(context.Background(), []string{"--version"}, &out, &errb); code != 0 || out.String() != "lanstream dev\n" {
+	if code := run(context.Background(), []string{"--version"}, strings.NewReader(""), &out, &errb); code != 0 || out.String() != "lanstream dev\n" {
 		t.Fatal(code, out.String())
 	}
 	out.Reset()
-	if code := run(context.Background(), []string{"-h"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "lanstream <folder>") {
+	if code := run(context.Background(), []string{"-h"}, strings.NewReader(""), &out, &errb); code != 0 || !strings.Contains(out.String(), "lanstream <folder>") {
 		t.Fatal(code, out.String())
 	}
 	out.Reset()
-	if code := run(context.Background(), []string{"--help"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "lanstream: stream videos") {
+	if code := run(context.Background(), []string{"--help"}, strings.NewReader(""), &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "lanstream: stream videos") {
 		t.Fatal(code, out.String())
 	}
 }
 
 func TestRunNeedsFolder(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := run(context.Background(), nil, &out, &errb); code != 2 || !strings.Contains(errb.String(), "Usage:") {
+	if code := run(context.Background(), nil, strings.NewReader(""), &out, &errb); code != 2 || !strings.Contains(errb.String(), "Usage:") {
 		t.Fatal(code, errb.String())
 	}
 	errb.Reset()
-	if code := run(context.Background(), []string{"a", "b"}, &out, &errb); code != 2 {
+	if code := run(context.Background(), []string{"a", "b"}, strings.NewReader(""), &out, &errb); code != 2 {
 		t.Fatal(code)
 	}
 	errb.Reset()
-	if code := run(context.Background(), []string{"/definitely/not/here"}, &out, &errb); code != 1 || !strings.HasPrefix(errb.String(), "lanstream: ") {
+	if code := run(context.Background(), []string{"/definitely/not/here"}, strings.NewReader(""), &out, &errb); code != 1 || !strings.HasPrefix(errb.String(), "lanstream: ") {
 		t.Fatal(code, errb.String())
 	}
 	errb.Reset()
-	if code := run(context.Background(), []string{"--nope"}, &out, &errb); code != 2 {
+	if code := run(context.Background(), []string{"--nope"}, strings.NewReader(""), &out, &errb); code != 2 {
 		t.Fatal(code)
 	}
 }
@@ -100,7 +100,7 @@ func TestRunServesAndStops(t *testing.T) {
 	var out syncBuffer
 	done := make(chan int)
 	// Folder before the flag: flags after the folder must still be honoured.
-	go func() { done <- run(ctx, []string{root, "--port", "0"}, &out, io.Discard) }()
+	go func() { done <- run(ctx, []string{root, "--port", "0"}, strings.NewReader(""), &out, io.Discard) }()
 	url := waitForLine(t, &out, "Playlist: ")
 	if b := httpGet(t, url); !strings.Contains(b, "a.mp4") {
 		t.Fatal(b)
@@ -136,7 +136,7 @@ func TestRunInvalidPort(t *testing.T) {
 	var out, errb bytes.Buffer
 	for _, p := range []string{"70000", "-1"} {
 		errb.Reset()
-		if code := run(context.Background(), []string{"--port", p, t.TempDir()}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "invalid port") {
+		if code := run(context.Background(), []string{"--port", p, t.TempDir()}, strings.NewReader(""), &out, &errb); code != 2 || !strings.Contains(errb.String(), "invalid port") {
 			t.Fatal(p, code, errb.String())
 		}
 	}
@@ -144,7 +144,7 @@ func TestRunInvalidPort(t *testing.T) {
 
 func TestUsageListsPicker(t *testing.T) {
 	var out bytes.Buffer
-	run(context.Background(), []string{"-h"}, &out, io.Discard)
+	run(context.Background(), []string{"-h"}, strings.NewReader(""), &out, io.Discard)
 	if !strings.Contains(out.String(), "lanstream                   pick a folder to share") {
 		t.Fatal(out.String())
 	}

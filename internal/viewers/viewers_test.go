@@ -77,3 +77,12 @@ func TestConcurrentUse(t *testing.T) {
 		t.Fatal(tr.Snapshot())
 	}
 }
+
+func TestReset(t *testing.T) {
+	tr := New(nil)
+	tr.Begin("ip", "a.mp4", 10, 0)
+	tr.Reset()
+	if tr.Active() {
+		t.Fatal("Reset kept viewers")
+	}
+}

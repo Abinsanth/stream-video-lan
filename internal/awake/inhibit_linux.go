@@ -3,7 +3,9 @@
 package awake
 
 import (
+	"context"
 	"syscall"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -23,9 +25,12 @@ func (l *logind) Acquire() error {
 	if err != nil {
 		return err
 	}
+	// Bounded, so a hung logind can't freeze the UI for D-Bus's 25 s default.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var fd dbus.UnixFD
 	err = conn.Object("org.freedesktop.login1", "/org/freedesktop/login1").
-		Call("org.freedesktop.login1.Manager.Inhibit", 0,
+		CallWithContext(ctx, "org.freedesktop.login1.Manager.Inhibit", 0,
 			"idle:sleep", "lanstream", "Someone is watching a video", "block").
 		Store(&fd)
 	if err != nil {

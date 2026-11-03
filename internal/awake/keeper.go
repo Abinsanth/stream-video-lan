@@ -6,8 +6,13 @@ import (
 	"time"
 )
 
-// releaseDelay is how long after the last viewer goes idle the machine may sleep again.
-const releaseDelay = 2 * time.Minute
+const (
+	// releaseDelay is how long after the last viewer goes idle the machine may sleep again.
+	releaseDelay = 2 * time.Minute
+	// retryDelay spaces out attempts when sleep can't be blocked (no D-Bus, polkit says no), so
+	// a refusal isn't re-asked twice a second on the UI's thread.
+	retryDelay = time.Minute
+)
 
 // Inhibitor is an OS mechanism that blocks idle sleep while held.
 type Inhibitor interface {
@@ -24,6 +29,7 @@ type Keeper struct {
 	mu         sync.Mutex
 	held       bool
 	lastActive time.Time
+	retryAt    time.Time // after a failed Acquire, don't try again before this
 }
 
 // NewKeeper returns a Keeper for inh, using now as its clock (nil means time.Now).
@@ -35,7 +41,7 @@ func NewKeeper(inh Inhibitor, now func() time.Time) *Keeper {
 }
 
 // Update holds the inhibitor while active is true, and releases it once nobody has been active
-// for two minutes. A failed Acquire is retried on the next active Update.
+// for two minutes. After a failed Acquire it waits a minute before trying again.
 func (k *Keeper) Update(active bool) {
 	if k == nil {
 		return
@@ -46,8 +52,13 @@ func (k *Keeper) Update(active bool) {
 	switch {
 	case active:
 		k.lastActive = now
-		if !k.held && k.inh.Acquire() == nil {
+		if k.held || now.Before(k.retryAt) {
+			return
+		}
+		if k.inh.Acquire() == nil {
 			k.held = true
+		} else {
+			k.retryAt = now.Add(retryDelay)
 		}
 	case k.held && now.Sub(k.lastActive) >= releaseDelay:
 		k.inh.Release()

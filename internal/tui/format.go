@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -79,4 +80,16 @@ func fit(s string, w int) string {
 func pad(s string, w int) string {
 	s = fit(s, w)
 	return s + strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
+}
+
+// displayName makes a file or folder name safe to draw: control characters (newline, tab,
+// escape, DEL…) become "?", so a strange name can't add screen lines, shift columns or inject
+// terminal escape sequences.
+func displayName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }

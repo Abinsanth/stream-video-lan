@@ -86,6 +86,9 @@ func (m Model) servingKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	s := &m.serving
 	switch k.String() {
+	case "esc":
+		m.notice = ""
+		return m, nil
 	case "tab", "shift+tab", "left", "right":
 		s.tab = 1 - s.tab
 		return m, nil
@@ -181,7 +184,7 @@ func (m Model) servingView() string {
 // because the link is what people need.
 func (m Model) headerLine() string {
 	url := m.share.PlaylistURL()
-	root := tildePath(m.share.Root(), m.deps.Home)
+	root := displayName(tildePath(m.share.Root(), m.deps.Home))
 	avail := m.width - 1 - lipgloss.Width(url) - 3
 	if avail < 4 {
 		return " " + titleStyle.Render(url)
@@ -211,7 +214,7 @@ func (m Model) videoRows(n int) []string {
 	var rows []string
 	for i := s.off; i < len(s.videos) && i < s.off+n; i++ {
 		v := s.videos[i]
-		text := pad(v.RelPath, nameW) + " " + fmt.Sprintf("%10s", humanSize(v.Size))
+		text := pad(displayName(v.RelPath), nameW) + " " + fmt.Sprintf("%10s", humanSize(v.Size))
 		if i == s.sel {
 			rows = append(rows, "> "+selStyle.Render(text))
 		} else {
@@ -222,23 +225,32 @@ func (m Model) videoRows(n int) []string {
 }
 
 func (m Model) viewerRows(n int) []string {
+	watchers := m.serving.watchers
+	held := m.deps.Keeper.Held() && n > 0
+	room := n
+	if held {
+		room-- // last row says the computer is being kept awake
+	}
 	var rows []string
-	if len(m.serving.watchers) == 0 {
+	if len(watchers) == 0 {
 		rows = append(rows, "  "+dimStyle.Render("Nobody is watching right now."))
 	}
-	nameW := max(m.width-26, 0)
-	for _, v := range m.serving.watchers {
-		rows = append(rows, "  "+pad(v.IP, 15)+" "+pad(v.RelPath, nameW)+" ~"+strconv.Itoa(v.Percent)+"%")
+	shown := watchers
+	if len(watchers) > room {
+		shown = watchers[:max(room-1, 0)]
 	}
-	if m.deps.Keeper.Held() && n > 0 {
-		awake := "  " + dimStyle.Render("Keeping this computer awake while someone watches")
-		if len(rows) >= n {
-			rows = rows[:n-1]
-		}
+	nameW := max(m.width-26, 0)
+	for _, v := range shown {
+		rows = append(rows, "  "+pad(v.IP, 15)+" "+pad(displayName(v.RelPath), nameW)+" ~"+strconv.Itoa(v.Percent)+"%")
+	}
+	if more := len(watchers) - len(shown); more > 0 && room > 0 {
+		rows = append(rows, "  "+dimStyle.Render("+"+strconv.Itoa(more)+" more"))
+	}
+	if held {
 		for len(rows) < n-1 {
 			rows = append(rows, "")
 		}
-		rows = append(rows, awake)
+		rows = append(rows[:n-1], "  "+dimStyle.Render("Keeping this computer awake while someone watches"))
 	}
 	return rows
 }
@@ -249,5 +261,9 @@ func (m Model) barLine() string {
 		return " " + m.bar.input.View()
 	}
 	hint := "/h help"
-	return " " + pad(m.flash, max(m.width-2-len(hint), 0)) + dimStyle.Render(hint)
+	msg := m.flash
+	if msg == "" && m.notice != "" {
+		msg = noticeStyle.Render(m.notice)
+	}
+	return " " + pad(msg, max(m.width-2-len(hint), 0)) + dimStyle.Render(hint)
 }

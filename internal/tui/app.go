@@ -48,6 +48,11 @@ type Deps struct {
 	GOOS          string
 	InitialFolder string // non-empty: share it straight away, skipping the picker
 	Version       string
+
+	// CheckUpdate returns the newest released version; UpdateNotes its release notes.
+	// Either may be nil (no update checks).
+	CheckUpdate func(ctx context.Context) (latest string, err error)
+	UpdateNotes func(ctx context.Context, version string) (string, error)
 }
 
 type screen int
@@ -63,13 +68,23 @@ const (
 	modalNone modalKind = iota
 	modalHelp
 	modalConfirm
-	modalLink // copying failed: show the whole link until dismissed
+	modalLink   // copying failed: show the whole link until dismissed
+	modalUpdate // /update
+)
+
+// stopNext says what to do once a share has finished stopping.
+type stopNext int
+
+const (
+	afterQuit stopNext = iota
+	afterPicker
 )
 
 type (
-	tickMsg  struct{}
-	startReq struct{ dir string }
-	countMsg struct {
+	tickMsg    struct{}
+	stoppedMsg struct{ next stopNext }
+	startReq   struct{ dir string }
+	countMsg   struct {
 		dir string
 		n   int // -1 when the folder can't be scanned
 	}
@@ -88,6 +103,11 @@ type Model struct {
 
 	flash      string
 	flashUntil time.Time
+	notice     string // "vX available — run lanstream --update", until dismissed
+
+	updateInfo updateInfo
+
+	stopping bool // a share is shutting down in the background
 
 	modal         modalKind
 	linkText      string
@@ -112,7 +132,7 @@ func NewModel(d Deps) Model {
 
 // Init starts the refresh tick, the recent-folder counts, and the initial share if one was given.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick(), m.picker.countCmds()}
+	cmds := []tea.Cmd{tick(), m.picker.countCmds(), startupCheckCmd(m.deps)}
 	if m.deps.InitialFolder != "" {
 		dir := m.deps.InitialFolder
 		cmds = append(cmds, func() tea.Msg { return startReq{dir: dir} })
@@ -129,6 +149,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.fixScroll()
+		return m, nil
+	case stoppedMsg:
+		return m.afterStop(msg.next)
+	case updateMsg:
+		m.notice = noticeFor(msg.latest)
+		return m, nil
+	case updateInfoMsg:
+		m.updateInfo = updateInfo{latest: msg.latest, notes: msg.notes, err: msg.err}
 		return m, nil
 	case tickMsg:
 		m.onTick()
@@ -150,7 +179,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	case tea.MouseClickMsg:
-		if m.screen == screenServing && m.modal == modalNone {
+		// Not while stopping: the share has already been handed off to shut down.
+		if m.screen == screenServing && m.modal == modalNone && !m.stopping && m.share != nil {
 			return m.servingClick(msg.Mouse())
 		}
 		return m, nil
@@ -160,6 +190,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) onKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.stopping {
+		return m, nil // already on the way out
+	}
 	if k.String() == "ctrl+c" {
 		if m.modal == modalConfirm { // a second Ctrl-C means "yes, really"
 			return m.quit()
@@ -184,7 +217,7 @@ func (m *Model) onTick() {
 	if m.flash != "" && !m.deps.Now().Before(m.flashUntil) {
 		m.flash = ""
 	}
-	if m.screen == screenServing {
+	if m.screen == screenServing && m.share != nil {
 		m.refreshServing()
 	}
 }
@@ -195,6 +228,10 @@ func (m *Model) setFlash(text string, d time.Duration) {
 
 // startShare begins sharing dir and switches to the serving screen, or reports why it can't.
 func (m Model) startShare(dir string) (tea.Model, tea.Cmd) {
+	if m.share != nil { // e.g. Enter typed ahead before the initial folder started
+		m.share.Stop()
+		m.share = nil
+	}
 	s, err := m.deps.Start(dir)
 	if err != nil || s == nil {
 		if err == nil {
@@ -256,19 +293,45 @@ func (m Model) quitAction() action { return func(m Model) (Model, tea.Cmd) { ret
 func (m Model) quit() (tea.Model, tea.Cmd) { return m.quitNow() }
 
 func (m Model) quitNow() (Model, tea.Cmd) {
+	m.modal = modalNone
 	if m.share != nil {
-		m.share.Stop()
-		m.share = nil
+		return m.stopShare(afterQuit)
 	}
 	m.deps.Keeper.Close()
-	m.modal = modalNone
 	return m, tea.Quit
+}
+
+// stopShare shuts the current share down in the background (it can take up to 3 s while
+// someone is mid-stream), showing "Stopping…" until stoppedMsg arrives.
+func (m Model) stopShare(next stopNext) (Model, tea.Cmd) {
+	s := m.share
+	m.share, m.stopping, m.modal = nil, true, modalNone
+	return m, func() tea.Msg {
+		s.Stop()
+		return stoppedMsg{next: next}
+	}
+}
+
+func (m Model) afterStop(next stopNext) (tea.Model, tea.Cmd) {
+	m.stopping = false
+	if next == afterQuit {
+		m.deps.Keeper.Close()
+		return m, tea.Quit
+	}
+	if m.deps.Tracker != nil {
+		m.deps.Tracker.Reset()
+	}
+	m.screen = screenPicker
+	m.picker = newPicker(m.deps)
+	return m, m.picker.countCmds()
 }
 
 // View renders the current screen, clipped to the terminal so nothing wraps.
 func (m Model) View() tea.View {
 	var body string
 	switch {
+	case m.stopping:
+		body = "\n " + dimStyle.Render("Stopping…")
 	case m.modal != modalNone:
 		body = m.modalView()
 	case m.screen == screenPicker:

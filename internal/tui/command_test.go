@@ -58,8 +58,8 @@ func TestQuitWithoutViewersQuitsAndStops(t *testing.T) {
 	m, _ := servingModel(t)
 	fs := m.share.(*fakeShare)
 	m = typeText(m, "/q")
-	_, cmd := updateCmd(m, "enter")
-	if !isQuit(cmd) || fs.stops != 1 {
+	m, cmd := updateCmd(m, "enter")
+	if !quits(m, cmd) || fs.stops != 1 {
 		t.Fatal("did not quit cleanly", fs.stops)
 	}
 }
@@ -73,12 +73,12 @@ func TestQuitWithViewersConfirms(t *testing.T) {
 		t.Fatal(view(m))
 	}
 	m, cmd := updateCmd(m, "n")
-	if isQuit(cmd) || fs.stops != 0 || m.modal != modalNone {
+	if quits(m, cmd) || fs.stops != 0 || m.modal != modalNone {
 		t.Fatal("quit after n")
 	}
 	m = press(m, "ctrl+c")
-	_, cmd = updateCmd(m, "y")
-	if !isQuit(cmd) || fs.stops != 1 {
+	m, cmd = updateCmd(m, "y")
+	if !quits(m, cmd) || fs.stops != 1 {
 		t.Fatal("no quit after y")
 	}
 }
@@ -98,7 +98,8 @@ func TestSwitchFolderStopsShareAndShowsPicker(t *testing.T) {
 	m, _ := servingModel(t)
 	fs := m.share.(*fakeShare)
 	m = typeText(m, "/f")
-	m = press(m, "enter")
+	m, cmd := updateCmd(m, "enter")
+	m = update(m, cmd())
 	if m.screen != screenPicker || m.share != nil || fs.stops != 1 {
 		t.Fatal(m.screen, fs.stops)
 	}
@@ -109,7 +110,7 @@ func TestSwitchFolderStopsShareAndShowsPicker(t *testing.T) {
 
 func TestCtrlCOnPickerQuits(t *testing.T) {
 	m, _ := pickerModel(t, nil)
-	if _, cmd := updateCmd(m, "ctrl+c"); !isQuit(cmd) {
+	if m, cmd := updateCmd(m, "ctrl+c"); !quits(m, cmd) {
 		t.Fatal("ctrl+c did not quit picker")
 	}
 }
@@ -118,7 +119,7 @@ func TestSecondCtrlCInConfirmQuits(t *testing.T) {
 	m, _ := servingModel(t, vid("a.mp4", 10))
 	m.deps.Tracker.Begin("ip", "a.mp4", 10, 0)
 	m = press(m, "ctrl+c")
-	if _, cmd := updateCmd(m, "ctrl+c"); !isQuit(cmd) {
+	if m, cmd := updateCmd(m, "ctrl+c"); !quits(m, cmd) {
 		t.Fatal("second ctrl+c did not quit")
 	}
 }
@@ -147,4 +148,44 @@ func TestTinyTerminalsNeverPanic(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestQuitStopsInBackgroundThenQuits(t *testing.T) {
+	m, _ := servingModel(t)
+	fs := m.share.(*fakeShare)
+	m = typeText(m, "/q")
+	m, cmd := updateCmd(m, "enter")
+	if !strings.Contains(view(m), "Stopping…") {
+		t.Fatal(view(m))
+	}
+	if fs.stops != 0 {
+		t.Fatal("stopped inside Update instead of in the background")
+	}
+	if !quits(m, cmd) || fs.stops != 1 {
+		t.Fatal("did not stop then quit")
+	}
+}
+
+func TestSwitchFolderClearsViewers(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 10))
+	m.deps.Tracker.Begin("ip", "a.mp4", 10, 0)
+	m = typeText(m, "/f")
+	m = press(m, "enter") // confirm appears
+	m, cmd := updateCmd(m, "y")
+	m = update(m, cmd()) // stoppedMsg → picker
+	if m.screen != screenPicker || m.deps.Tracker.Active() {
+		t.Fatal("viewers survived the switch")
+	}
+}
+
+func TestClicksWhileStoppingDoNotCrash(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 1))
+	m = typeText(m, "/q")
+	m = press(m, "enter") // now "Stopping…", share already handed off
+	for _, y := range []int{rowHeader, rowTabs, rowListStart} {
+		m = click(m, 5, y)
+		m = click(m, 5, y)
+	}
+	m = runCmds(m)
+	_ = view(m)
 }

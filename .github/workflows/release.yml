@@ -1,0 +1,40 @@
+# Merging into `release` publishes the version in VERSION as a GitHub Release.
+# If a run fails part-way, re-run it: tagging and the draft release are both safe to repeat.
+name: Release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Tag the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh .github/tag-release.sh
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # GoReleaser uploads into a draft; only a complete release becomes public (and "latest"),
+      # so install.sh and --update never see a release with missing files.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v$(tr -d '[:space:]' < VERSION)" --repo "$GITHUB_REPOSITORY" --draft=false --latest

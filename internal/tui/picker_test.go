@@ -74,7 +74,7 @@ func TestPickerStartErrorStays(t *testing.T) {
 
 func TestPickerQQuits(t *testing.T) {
 	m, _ := pickerModel(t, nil)
-	if _, cmd := updateCmd(m, "q"); !isQuit(cmd) {
+	if m, cmd := updateCmd(m, "q"); !quits(m, cmd) {
 		t.Fatal("q did not quit")
 	}
 }
@@ -183,5 +183,14 @@ func TestBrowseDoesNotCountHomeOrAbove(t *testing.T) {
 	}
 	if _, cmd := m.enterDir(filepath.Join(home, "Movies")); cmd == nil {
 		t.Fatal("entering ~/Movies should count its videos")
+	}
+}
+
+func TestPickerScrollsOnTinyHeight(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 30, Height: 5})
+	m = selectRow(m, "Type a path…")
+	if !strings.Contains(view(m), "Type a path") {
+		t.Fatal(view(m))
 	}
 }

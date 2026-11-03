@@ -2,11 +2,13 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/Abinsanth/stream-video-lan/internal/config"
@@ -224,5 +226,61 @@ func TestFirstRunTipShownOnce(t *testing.T) {
 	m2, _ := servingModelWithConfig(t, config.Config{TipShown: true})
 	if strings.Contains(view(m2), "click Allow") {
 		t.Fatal("tip shown again")
+	}
+}
+
+func TestStartShareStopsPreviousShare(t *testing.T) {
+	m, _ := servingModel(t)
+	old := m.share.(*fakeShare)
+	m = update(m, startReq{dir: "/other"})
+	if old.stops != 1 {
+		t.Fatal("previous share not stopped")
+	}
+}
+
+func TestResizeKeepsSelectionVisible(t *testing.T) {
+	var vids []library.Video
+	for i := 0; i < 50; i++ {
+		vids = append(vids, vid(fmt.Sprintf("ep%02d.mkv", i), 1))
+	}
+	m, _ := servingModel(t, vids...)
+	m = press(m, "end")
+	m = update(m, tea.WindowSizeMsg{Width: 40, Height: 7})
+	if !strings.Contains(view(m), "ep49.mkv") {
+		t.Fatal(view(m))
+	}
+}
+
+func TestViewersOverflowShowsMore(t *testing.T) {
+	m, _ := servingModel(t)
+	for i := 0; i < 10; i++ {
+		m.deps.Tracker.Begin(fmt.Sprintf("10.0.0.%d", i), "a.mp4", 10, 0)
+	}
+	m = update(m, tea.WindowSizeMsg{Width: 80, Height: 8})
+	m = update(m, tickMsg{})
+	m = press(m, "tab")
+	v := view(m)
+	if !strings.Contains(v, "+") || !strings.Contains(v, "more") {
+		t.Fatal(v)
+	}
+}
+
+func TestControlCharsInNamesDontBreakLayout(t *testing.T) {
+	m, copied := servingModel(t, vid("bad\nname\t.mkv", 1), vid("b.mp4", 1))
+	v := view(m)
+	if n := len(strings.Split(v, "\n")); n != 20 || !strings.Contains(v, "bad?name?.mkv") || !strings.Contains(v, "/h help") {
+		t.Fatalf("%d lines:\n%s", n, v)
+	}
+	m = click(m, 5, 4)
+	m = click(m, 5, 4)
+	m = runCmds(m)
+	if *copied != testBase+"/v/b.mp4" {
+		t.Fatal(*copied)
+	}
+}
+
+func TestDisplayName(t *testing.T) {
+	if got := displayName("a\nb\tc\x1b[31m\x7fd"); got != "a?b?c?[31m?d" {
+		t.Fatalf("%q", got)
 	}
 }
