@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, release]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile all targets
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/lanstream || exit 1
+          done
+
+  version:
+    if: github.base_ref == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Release PRs come from main with an unreleased VERSION
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "main" ]; then
+            echo "::error::PRs into release must come from main (got $HEAD_REF)."; exit 1
+          fi
+          v="v$(tr -d '[:space:]' < VERSION)"
+          if gh release view "$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$v is already released. Bump VERSION on main first."; exit 1
+          fi
