@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -81,5 +83,39 @@ func TestRunRescansPeriodically(t *testing.T) {
 			t.Fatal("Run did not pick up the new file")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestConcurrentRescansCoalesce(t *testing.T) {
+	root := t.TempDir()
+	lib := must(New(root))
+	var calls atomic.Int32
+	orig := scanFn
+	scanFn = func(a, r string) ([]Video, error) {
+		calls.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		return orig(a, r)
+	}
+	t.Cleanup(func() { scanFn = orig })
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); lib.Rescan() }()
+	}
+	wg.Wait()
+	if n := calls.Load(); n > 3 {
+		t.Fatalf("20 concurrent rescans ran %d scans, want <= 3", n)
+	}
+}
+
+func TestSequentialRescansStillScan(t *testing.T) {
+	root := t.TempDir()
+	lib := must(New(root))
+	mk(t, root, "a.mp4")
+	lib.Rescan()
+	mk(t, root, "b.mp4")
+	lib.Rescan()
+	if len(lib.Videos()) != 2 {
+		t.Fatal(relPaths(lib.Videos()))
 	}
 }

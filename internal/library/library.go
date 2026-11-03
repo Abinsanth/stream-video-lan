@@ -2,9 +2,6 @@ package library
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -15,6 +12,9 @@ type Library struct {
 	root     string // absolute, as the user gave it (for display and joining)
 	realRoot string // symlink-resolved root, for containment checks
 
+	scanMu    sync.Mutex // serialises scans; see Rescan
+	lastStart time.Time  // when the most recent scan began (guarded by scanMu)
+
 	mu     sync.RWMutex
 	videos []Video
 	byPath map[string]Video
@@ -23,22 +23,11 @@ type Library struct {
 
 // New opens root (which must be a folder) and runs the first scan.
 func New(root string) (*Library, error) {
-	abs, err := filepath.Abs(root)
+	abs, real, err := resolveRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	realRoot, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(realRoot)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a folder", root)
-	}
-	l := &Library{root: abs, realRoot: realRoot}
+	l := &Library{root: abs, realRoot: real}
 	if err := l.Rescan(); err != nil {
 		return nil, err
 	}
@@ -56,8 +45,19 @@ func (l *Library) Videos() []Video {
 }
 
 // Rescan replaces the list with a fresh scan. On error the list becomes empty and Err returns it.
+//
+// Concurrent calls coalesce: a caller that waited while another scan ran, where that scan began
+// after this call was made, reuses its result instead of scanning again. So a burst of playlist
+// requests plus the background ticker costs one or two scans, and a slow disk can't pile them up.
 func (l *Library) Rescan() error {
-	vs, err := Scan(l.root)
+	asked := time.Now()
+	l.scanMu.Lock()
+	defer l.scanMu.Unlock()
+	if l.lastStart.After(asked) {
+		return l.Err()
+	}
+	l.lastStart = time.Now()
+	vs, err := scanFn(l.root, l.realRoot)
 	byPath := make(map[string]Video, len(vs))
 	for _, v := range vs {
 		byPath[v.RelPath] = v

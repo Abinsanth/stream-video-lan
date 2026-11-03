@@ -22,23 +22,43 @@ type Video struct {
 // hidden/system entries and unreadable subfolders are skipped. It returns an error only when
 // root itself can't be read.
 func Scan(root string) ([]Video, error) {
-	absRoot, err := filepath.Abs(root)
+	abs, real, err := resolveRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	realRoot, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return nil, err
+	return scanResolved(abs, real)
+}
+
+// scanFn is the scan Library uses; tests swap it to count or slow scans.
+var scanFn = scanResolved
+
+// resolveRoot returns root as an absolute path and as its real path (symlinks resolved), both
+// spelled with the on-disk letter case on macOS. Root must be a folder.
+func resolveRoot(root string) (abs, real string, err error) {
+	if abs, err = filepath.Abs(root); err != nil {
+		return "", "", err
 	}
-	info, err := os.Stat(realRoot)
+	// Both spellings must agree on letter case, or every containment check fails on macOS
+	// when the folder was typed as ~/movies but is stored as ~/Movies.
+	abs = canonicalCase(abs)
+	if real, err = filepath.EvalSymlinks(abs); err != nil {
+		return "", "", err
+	}
+	real = canonicalCase(real)
+	info, err := os.Stat(real)
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a folder", root)
+		return "", "", fmt.Errorf("%s is not a folder", root)
 	}
-	s := scanner{realRoot: realRoot, ancestors: map[string]bool{realRoot: true}}
-	if err := s.walk(absRoot, "", realRoot, true); err != nil {
+	return abs, real, nil
+}
+
+// scanResolved walks abs, using real (from resolveRoot) for every containment check.
+func scanResolved(abs, real string) ([]Video, error) {
+	s := scanner{realRoot: real, ancestors: map[string]bool{real: true}}
+	if err := s.walk(abs, "", real, true); err != nil {
 		return nil, err
 	}
 	slices.SortFunc(s.videos, func(a, b Video) int {

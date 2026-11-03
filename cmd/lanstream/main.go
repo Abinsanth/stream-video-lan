@@ -10,7 +10,11 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
-	stop()
-	os.Exit(code)
+	// After the first Ctrl-C, restore the default handling so a second one ends the process
+	// immediately instead of waiting out the shutdown.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }

@@ -105,7 +105,7 @@ func TestRunServesAndStops(t *testing.T) {
 	if b := httpGet(t, url); !strings.Contains(b, "a.mp4") {
 		t.Fatal(b)
 	}
-	if !strings.Contains(out.String(), "(1 videos)") {
+	if !strings.Contains(out.String(), "(1 video)") {
 		t.Fatalf("startup line missing count:\n%s", out.String())
 	}
 	cancel()
@@ -132,12 +132,31 @@ func TestExpandHome(t *testing.T) {
 	}
 }
 
-func TestHTTPServerTimeouts(t *testing.T) {
-	srv := newHTTPServer(http.NotFoundHandler())
-	if srv.IdleTimeout != 60*time.Second || srv.ReadHeaderTimeout != 10*time.Second {
-		t.Fatalf("idle %v header %v", srv.IdleTimeout, srv.ReadHeaderTimeout)
+func TestRunInvalidPort(t *testing.T) {
+	var out, errb bytes.Buffer
+	for _, p := range []string{"70000", "-1"} {
+		errb.Reset()
+		if code := run(context.Background(), []string{"--port", p, t.TempDir()}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "invalid port") {
+			t.Fatal(p, code, errb.String())
+		}
 	}
-	if srv.WriteTimeout != 0 || srv.ReadTimeout != 0 {
-		t.Fatal("read/write timeouts would cut off long streams")
+}
+
+func TestUsageListsPicker(t *testing.T) {
+	var out bytes.Buffer
+	run(context.Background(), []string{"-h"}, &out, io.Discard)
+	if !strings.Contains(out.String(), "lanstream                   pick a folder to share") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestIsTerminalFalseForBuffersAndFiles(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTerminal(&bytes.Buffer{}) || isTerminal(f) {
+		t.Fatal("non-terminal reported as terminal")
 	}
 }

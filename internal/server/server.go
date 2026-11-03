@@ -3,18 +3,23 @@ package server
 
 import (
 	"io"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/Abinsanth/stream-video-lan/internal/library"
+	"github.com/Abinsanth/stream-video-lan/internal/viewers"
 )
 
 // Server serves one Library. It is read-only: there are no routes that change files.
 type Server struct {
 	lib *library.Library
+	tr  *viewers.Tracker // may be nil
 }
 
-// New returns a Server for lib.
-func New(lib *library.Library) *Server { return &Server{lib: lib} }
+// New returns a Server for lib. If tr is non-nil, every video GET is recorded in it.
+func New(lib *library.Library, tr *viewers.Tracker) *Server { return &Server{lib: lib, tr: tr} }
 
 // Handler returns the HTTP routes. GET routes also answer HEAD; other methods get 405.
 func (s *Server) Handler() http.Handler {
@@ -26,8 +31,17 @@ func (s *Server) Handler() http.Handler {
 }
 
 // baseURL is the address the client used to reach us, so a device on the hotspot gets
-// hotspot links and one on Ethernet gets Ethernet links.
-func baseURL(r *http.Request) string { return "http://" + r.Host }
+// hotspot links and one on Ethernet gets Ethernet links. Without a Host header (old HTTP/1.0
+// clients) it falls back to the local address the connection arrived on.
+func baseURL(r *http.Request) string {
+	if r.Host != "" {
+		return "http://" + r.Host
+	}
+	if a, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		return "http://" + a.String()
+	}
+	return "http://localhost"
+}
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -54,5 +68,57 @@ func (s *Server) video(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", library.ContentType(v.RelPath))
+	if s.tr != nil && r.Method == http.MethodGet {
+		x := s.tr.Begin(clientIP(r), v.RelPath, fi.Size(), rangeStart(r.Header.Get("Range"), fi.Size()))
+		defer x.End()
+		w = &countingWriter{ResponseWriter: w, x: x}
+	}
 	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
+
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// rangeStart returns the first byte a Range header asks for: "bytes=N-…" → N, "bytes=-N" (the
+// last N bytes) → size-N, and 0 for no header or one it can't read.
+func rangeStart(h string, size int64) int64 {
+	spec, ok := strings.CutPrefix(h, "bytes=")
+	if !ok {
+		return 0
+	}
+	first, _, _ := strings.Cut(spec, ",")
+	from, to, ok := strings.Cut(strings.TrimSpace(first), "-")
+	if !ok {
+		return 0
+	}
+	if from == "" {
+		n, err := strconv.ParseInt(to, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return max(size-n, 0)
+	}
+	n, err := strconv.ParseInt(from, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// countingWriter reports body bytes to the viewer tracker.
+type countingWriter struct {
+	http.ResponseWriter
+	x *viewers.Transfer
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(p)
+	c.x.Wrote(int64(n))
+	return n, err
+}
+
+func (c *countingWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
