@@ -99,9 +99,21 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer) int {
 	if cfgErr == nil {
 		paths = append(paths, cfg)
 	}
+	home, _ := os.UserHomeDir()
+	var rcs []string
+	if version.Version != "dev" && home != "" {
+		rcs = rcFilesWithPath(home)
+	}
 	fmt.Fprintln(stdout, "This removes:")
 	for _, p := range paths {
 		fmt.Fprintln(stdout, "  "+p)
+	}
+	for _, rc := range rcs {
+		if rc == fishFile(home) {
+			fmt.Fprintln(stdout, "  "+rc)
+		} else {
+			fmt.Fprintln(stdout, "  the PATH line in "+rc)
+		}
 	}
 	if !ask(stdin, stdout, "Remove lanstream and its settings?") {
 		fmt.Fprintln(stdout, "No changes made.")
@@ -112,6 +124,12 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer) int {
 		if err := os.RemoveAll(cfg); err != nil {
 			fmt.Fprintf(stderr, "lanstream: can't remove %s: %v\n", cfg, rootErr(err))
 			failed = append(failed, "rm -rf "+cfg)
+		}
+	}
+	for _, rc := range rcs {
+		if err := removePathLines(rc, home); err != nil {
+			fmt.Fprintf(stderr, "lanstream: can't edit %s: %v\n", rc, rootErr(err))
+			failed = append(failed, "remove the two lines after '"+pathMarker+"' in "+rc)
 		}
 	}
 	if binary != "" {
