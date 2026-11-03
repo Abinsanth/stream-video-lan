@@ -57,8 +57,18 @@ func (m Model) runCommand(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "/update":
 		return m.openUpdate()
-	case "/f", "/folder":
+	case "/stop", "/f", "/folder":
+		if m.share == nil {
+			m.setFlash("Nothing is being shared yet.", copyFlashFor)
+			return m, nil
+		}
 		return m.confirmOr(switchFolder)
+	case "/qr":
+		if m.share == nil {
+			m.setFlash("Nothing is being shared yet.", copyFlashFor)
+			return m, nil
+		}
+		return m.openQR()
 	case "/q", "/quit":
 		return m.confirmOr(m.quitAction())
 	}
@@ -88,7 +98,7 @@ func (m Model) modalKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	switch key { // help or link box
+	switch key { // help, link, update or QR box
 	case "esc", "q", "enter":
 		m.modal, m.linkText = modalNone, ""
 	}
@@ -101,6 +111,8 @@ func (m Model) modalView() string {
 		return "\n " + titleStyle.Render(m.confirmText)
 	case modalUpdate:
 		return m.updateView()
+	case modalQR:
+		return m.qrView()
 	case modalLink:
 		out := []string{"", " " + titleStyle.Render("Copy this link") + " (the clipboard isn't available here):", ""}
 		for _, l := range strings.Split(ansi.Hardwrap(m.linkText, max(m.width-4, 10), true), "\n") {
@@ -111,14 +123,21 @@ func (m Model) modalView() string {
 	lines := []string{
 		" " + titleStyle.Render("lanstream help"),
 		"",
-		" Commands  /h help · /f another folder · /update · /q quit (or Ctrl-C)",
-		" Keys      tab switch tabs · ↑ ↓ pgup pgdown home end move",
-		"           enter or double-click a video: copy its link",
-		"           double-click the top line: copy the playlist link",
-		"",
-		" Playlist links",
+		" Commands  /h help · /stop stop sharing (back to the folder picker)",
+		"           /qr QR code for phones · /update · /q quit (or Ctrl-C)",
+	}
+	if m.screen == screenPicker {
+		lines = append(lines,
+			" Keys      ↑ ↓ move · enter select · double-click opens · esc back",
+			"           in Browse: s shares the folder you're in")
+	} else {
+		lines = append(lines,
+			" Keys      tab switch tabs · ↑ ↓ pgup pgdown home end move",
+			"           enter or double-click a video: copy its link",
+			"           double-click the top line: copy the playlist link")
 	}
 	if m.share != nil {
+		lines = append(lines, "", " Playlist links")
 		for _, u := range m.share.PlaylistURLs() {
 			lines = append(lines, "   "+u)
 		}

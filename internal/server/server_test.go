@@ -342,3 +342,53 @@ func TestBaseURLWithoutHost(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func getHTML(t *testing.T, url string) result {
+	return get(t, url, "Accept", "text/html,application/xhtml+xml")
+}
+
+func TestIndexPageForPhones(t *testing.T) {
+	ts := newTestServer(t, map[string]string{"a.mp4": "x"})
+	host := strings.TrimPrefix(ts.URL, "http://")
+	r := getHTML(t, ts.URL+"/")
+	if r.code != 200 || !strings.HasPrefix(r.header.Get("Content-Type"), "text/html") {
+		t.Fatal(r.code, r.header)
+	}
+	for _, want := range []string{
+		`href="intent://` + host + `/playlist.m3u8#Intent;scheme=http;package=org.videolan.vlc;type=audio/x-mpegurl;end"`,
+		`href="vlc://http://` + host + `/playlist.m3u8"`,
+		ts.URL + "/playlist.m3u8",
+		`name="viewport"`,
+	} {
+		if !strings.Contains(r.body, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+	if strings.Contains(r.body, "ZgotmplZ") {
+		t.Fatal("a link was blanked by template escaping")
+	}
+}
+
+func TestIndexStaysPlainForOtherClients(t *testing.T) {
+	ts := newTestServer(t, nil)
+	r := get(t, ts.URL+"/")
+	if !strings.HasPrefix(r.header.Get("Content-Type"), "text/plain") || !strings.Contains(r.body, "/playlist.m3u8") {
+		t.Fatal(r.header, r.body)
+	}
+}
+
+func TestIndexPageEscapesHostile(t *testing.T) {
+	ts := newTestServer(t, nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Host = `evil"><script>x</script>`
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return // the client may refuse to send it at all: also fine
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if strings.Contains(string(b), "<script>x") {
+		t.Fatal("unescaped host in page")
+	}
+}

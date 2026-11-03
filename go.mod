@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/godbus/dbus/v5 v5.2.4
 	golang.org/x/term v0.47.0
+	rsc.io/qr v0.1.0
 )
 
 require (

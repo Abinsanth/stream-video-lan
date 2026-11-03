@@ -43,7 +43,15 @@ func baseURL(r *http.Request) string {
 	return "http://localhost"
 }
 
+// index is the launcher page for browsers (what a phone opens after scanning the QR code) and a
+// one-line hint for everything else.
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		writePage(w, baseURL(r))
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	io.WriteString(w, "lanstream is running. Open "+PlaylistURL(baseURL(r))+" in VLC.\n")
 }
