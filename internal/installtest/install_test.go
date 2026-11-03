@@ -66,14 +66,21 @@ func runInstall(t *testing.T, shell string, mode sumsMode, extraEnv ...string) (
 
 	home := t.TempDir()
 	dir := filepath.Join(home, "bin")
-	cmd := exec.Command(shell, "../../install.sh")
-	cmd.Env = []string{
-		"HOME=" + home,
-		"PATH=/usr/bin:/bin",
-		"LANSTREAM_DOWNLOAD_BASE=" + ts.URL,
-		"LANSTREAM_INSTALL_DIR=" + dir,
+	env := map[string]string{
+		"HOME":                    home,
+		"PATH":                    "/usr/bin:/bin",
+		"SHELL":                   "/bin/zsh",
+		"LANSTREAM_DOWNLOAD_BASE": ts.URL,
+		"LANSTREAM_INSTALL_DIR":   dir,
 	}
-	cmd.Env = append(cmd.Env, extraEnv...)
+	for _, kv := range extraEnv { // later values win; "{home}" and "{dir}" are filled in
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = strings.NewReplacer("{home}", home, "{dir}", dir).Replace(v)
+	}
+	cmd := exec.Command(shell, "../../install.sh")
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	out, err := cmd.CombinedOutput()
 	return dir, string(out), err
 }
@@ -88,7 +95,7 @@ func TestInstallScriptPOSIX(t *testing.T) {
 		if err != nil || !strings.Contains(string(b), "9.9.9") {
 			t.Fatalf("%s: installed binary: %q %v", shell, b, err)
 		}
-		for _, want := range []string{"Installed lanstream 9.9.9 to " + dir + "/lanstream", "Add it to your PATH", "Run: lanstream"} {
+		for _, want := range []string{"Installed lanstream 9.9.9 to " + dir + "/lanstream", "Added " + dir + " to your PATH in ", "lanstream"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: output missing %q:\n%s", shell, want, out)
 			}
@@ -119,23 +126,97 @@ func TestInstallScriptNoSudo(t *testing.T) {
 	}
 }
 
-func TestInstallScriptPathHintFollowsShell(t *testing.T) {
+const marker = "# Added by lanstream installer"
+
+// rcAfterInstall runs install.sh with SHELL=shell and returns the home dir and the output.
+func rcAfterInstall(t *testing.T, shell string, extraEnv ...string) (string, string) {
+	t.Helper()
+	dir, out, err := runInstall(t, "sh", goodChecksums, append([]string{"SHELL=" + shell}, extraEnv...)...)
+	if err != nil {
+		t.Fatalf("SHELL=%q: %v\n%s", shell, err, out)
+	}
+	return filepath.Dir(dir), out
+}
+
+func TestInstallAddsPathForTheUsersShell(t *testing.T) {
 	bashRC := ".bashrc"
 	if runtime.GOOS == "darwin" {
 		bashRC = ".bash_profile"
 	}
-	cases := map[string]string{
-		"/bin/zsh":      "/.zshrc",
-		"/usr/bin/zsh":  "/.zshrc",
-		"/bin/bash":     "/" + bashRC,
-		"/usr/bin/fish": "fish_add_path",
-		"/bin/sh":       "/.profile",
-		"":              "/.profile",
+	cases := map[string]struct{ file, line string }{
+		"/bin/zsh":      {".zshrc", `export PATH="{dir}:$PATH"`},
+		"/usr/bin/zsh":  {".zshrc", `export PATH="{dir}:$PATH"`},
+		"/bin/bash":     {bashRC, `export PATH="{dir}:$PATH"`},
+		"/usr/bin/fish": {".config/fish/conf.d/lanstream.fish", "fish_add_path {dir}"},
+		"/bin/sh":       {".profile", `export PATH="{dir}:$PATH"`},
+		"":              {".profile", `export PATH="{dir}:$PATH"`},
 	}
-	for sh, want := range cases {
-		_, out, err := runInstall(t, "sh", goodChecksums, "SHELL="+sh)
-		if err != nil || !strings.Contains(out, want) {
-			t.Errorf("SHELL=%q: want %q in\n%s", sh, want, out)
+	for sh, c := range cases {
+		home, out := rcAfterInstall(t, sh)
+		rc := filepath.Join(home, c.file)
+		b, err := os.ReadFile(rc)
+		line := strings.ReplaceAll(c.line, "{dir}", filepath.Join(home, "bin"))
+		if err != nil || !strings.Contains(string(b), marker+"\n"+line+"\n") {
+			t.Errorf("SHELL=%q: %s = %q (%v)", sh, rc, b, err)
 		}
+		if !strings.Contains(out, "to your PATH in "+rc) || !strings.Contains(out, "Open a new terminal") {
+			t.Errorf("SHELL=%q: output doesn't say what changed:\n%s", sh, out)
+		}
+	}
+}
+
+func TestInstallDefaultDirUsesHOMEInRC(t *testing.T) {
+	home, _ := rcAfterInstall(t, "/bin/zsh", "LANSTREAM_INSTALL_DIR={home}/.local/bin")
+	b, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if !strings.Contains(string(b), `export PATH="$HOME/.local/bin:$PATH"`) {
+		t.Fatalf("%q", b)
+	}
+}
+
+func TestInstallKeepsExistingRCAndAddsOnce(t *testing.T) {
+	home := t.TempDir()
+	rc := filepath.Join(home, ".zshrc")
+	os.WriteFile(rc, []byte("alias ll='ls -l'"), 0o644) // no trailing newline
+	for i := 0; i < 2; i++ {
+		_, out, err := runInstall(t, "sh", goodChecksums, "HOME="+home, "LANSTREAM_INSTALL_DIR="+filepath.Join(home, "bin"))
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+	}
+	b, _ := os.ReadFile(rc)
+	if !strings.HasPrefix(string(b), "alias ll='ls -l'\n") || strings.Count(string(b), marker) != 1 {
+		t.Fatalf("%q", b)
+	}
+}
+
+func TestInstallOptOutLeavesRCAlone(t *testing.T) {
+	home, out := rcAfterInstall(t, "/bin/zsh", "LANSTREAM_NO_MODIFY_PATH=1")
+	if _, err := os.Stat(filepath.Join(home, ".zshrc")); !os.IsNotExist(err) {
+		t.Fatal(".zshrc written despite LANSTREAM_NO_MODIFY_PATH")
+	}
+	if !strings.Contains(out, "Add it to your PATH") {
+		t.Fatal(out)
+	}
+}
+
+func TestInstallLeavesRCAloneWhenAlreadyOnPath(t *testing.T) {
+	home, out := rcAfterInstall(t, "/bin/zsh", "PATH={dir}:/usr/bin:/bin")
+	if _, err := os.Stat(filepath.Join(home, ".zshrc")); !os.IsNotExist(err) {
+		t.Fatal(".zshrc written though the dir is already on PATH")
+	}
+	if strings.Contains(out, "PATH") {
+		t.Fatalf("PATH advice printed though not needed:\n%s", out)
+	}
+}
+
+func TestInstallInterruptedExitsCleanly(t *testing.T) {
+	fake := t.TempDir() // a curl that interrupts the installer, as Ctrl-C would
+	os.WriteFile(filepath.Join(fake, "curl"), []byte("#!/bin/sh\nkill -INT $PPID\nsleep 1\n"), 0o755)
+	dir, out, err := runInstall(t, "sh", goodChecksums, "PATH="+fake+":/usr/bin:/bin")
+	if err == nil || strings.Contains(out, "Checksum mismatch") || strings.Contains(out, "Download failed") {
+		t.Fatalf("err=%v, misleading output:\n%s", err, out)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Fatal("install dir created by an interrupted run")
 	}
 }
