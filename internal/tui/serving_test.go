@@ -113,7 +113,7 @@ func TestViewersTabShowsWatchersAndAwake(t *testing.T) {
 	m = update(m, tickMsg{})
 	m = press(m, "tab")
 	v := view(m)
-	for _, s := range []string{"Viewers (1)", "192.168.1.12", "Your Name.mp4", "~45%", "Keeping this computer awake"} {
+	for _, s := range []string{"Viewers (1)", "192.168.1.12", "Your Name.mp4", "~45%", "keeping awake"} {
 		if !strings.Contains(v, s) {
 			t.Errorf("missing %q in\n%s", s, v)
 		}
@@ -282,5 +282,71 @@ func TestControlCharsInNamesDontBreakLayout(t *testing.T) {
 func TestDisplayName(t *testing.T) {
 	if got := displayName("a\nb\tc\x1b[31m\x7fd"); got != "a?b?c?[31m?d" {
 		t.Fatalf("%q", got)
+	}
+}
+
+func lastLine(m Model) string {
+	lines := strings.Split(view(m), "\n")
+	return lines[len(lines)-1]
+}
+
+func tabsRow(m Model) string { return strings.Split(view(m), "\n")[rowTabs] }
+
+func TestVideosAndViewersHints(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 1))
+	if !strings.Contains(lastLine(m), "↑↓ select · enter copy link · tab viewers · /stop · /qr · /h help") {
+		t.Fatal(lastLine(m))
+	}
+	m = press(m, "tab")
+	if !strings.Contains(lastLine(m), "tab videos · /stop · /qr · /h help") {
+		t.Fatal(lastLine(m))
+	}
+}
+
+func TestPickerHints(t *testing.T) {
+	m, _ := pickerModel(t, nil)
+	if !strings.Contains(lastLine(m), "↑↓ move · enter select · /h help · /q quit") {
+		t.Fatal(lastLine(m))
+	}
+	m = selectRow(m, "Browse…")
+	m = press(m, "enter")
+	if !strings.Contains(lastLine(m), "s share this folder · esc back · /h help") {
+		t.Fatal(lastLine(m))
+	}
+	m = press(m, "esc")
+	m = selectRow(m, "Type a path…")
+	m = press(m, "enter")
+	if !strings.Contains(lastLine(m), "esc back (then /h help)") {
+		t.Fatal(lastLine(m))
+	}
+}
+
+func TestStatusLine(t *testing.T) {
+	m, _ := servingModel(t, vid("a.mp4", 10))
+	if !strings.Contains(tabsRow(m), "● sharing · nobody watching") {
+		t.Fatal(tabsRow(m))
+	}
+	m.deps.Tracker.Begin("10.0.0.1", "a.mp4", 10, 0)
+	m.deps.Tracker.Begin("10.0.0.2", "a.mp4", 10, 0)
+	m = update(m, tickMsg{}) // keeper acquires
+	if row := tabsRow(m); !strings.Contains(row, "● sharing · 2 watching · keeping awake") {
+		t.Fatal(row)
+	}
+}
+
+func TestNarrowServingKeepsTabs(t *testing.T) {
+	m, _ := servingModel(t, vid(strings.Repeat("long-name-", 10)+".mkv", 1))
+	m.deps.Tracker.Begin("10.0.0.1", "a.mp4", 10, 0)
+	m = update(m, tickMsg{})
+	for _, w := range []int{40, 20} {
+		m = update(m, tea.WindowSizeMsg{Width: w, Height: 12})
+		for _, line := range strings.Split(view(m), "\n") {
+			if lipgloss.Width(line) > w {
+				t.Fatalf("width %d: line too long %q", w, line)
+			}
+		}
+		if w == 40 && !strings.Contains(view(m), "[ Videos ]") {
+			t.Fatal("tabs lost at 40 columns")
+		}
 	}
 }

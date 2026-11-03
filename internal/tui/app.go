@@ -70,6 +70,7 @@ const (
 	modalConfirm
 	modalLink   // copying failed: show the whole link until dismissed
 	modalUpdate // /update
+	modalQR     // /qr
 )
 
 // stopNext says what to do once a share has finished stopping.
@@ -108,6 +109,7 @@ type Model struct {
 	updateInfo updateInfo
 
 	stopping bool // a share is shutting down in the background
+	quitting bool // tea.Quit has been sent; Bubble Tea still draws one last frame
 
 	modal         modalKind
 	linkText      string
@@ -150,6 +152,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.fixScroll()
+		m.syncPickerScroll()
 		return m, nil
 	case stoppedMsg:
 		return m.afterStop(msg.next)
@@ -183,6 +186,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenServing && m.modal == modalNone && !m.stopping && m.share != nil {
 			return m.servingClick(msg.Mouse())
 		}
+		if m.screen == screenPicker && m.modal == modalNone && !m.bar.focused {
+			return m.pickerClick(msg.Mouse())
+		}
 		return m, nil
 	}
 	// Anything else (paste, cursor blink) goes to whichever text input is active.
@@ -202,8 +208,20 @@ func (m Model) onKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.modal != modalNone {
 		return m.modalKey(k)
 	}
+	// One command bar on every screen. While typing a path, "/" is part of the path.
+	if m.bar.focused {
+		return m.barKey(k)
+	}
+	if k.Text == "/" && !(m.screen == screenPicker && m.picker.mode == pickType) {
+		return m.focusBar()
+	}
 	if m.screen == screenPicker {
-		return m.pickerKey(k)
+		nm, cmd := m.pickerKey(k)
+		if pm, ok := nm.(Model); ok {
+			pm.syncPickerScroll()
+			return pm, cmd
+		}
+		return nm, cmd
 	}
 	return m.servingKey(k)
 }
@@ -298,6 +316,7 @@ func (m Model) quitNow() (Model, tea.Cmd) {
 		return m.stopShare(afterQuit)
 	}
 	m.deps.Keeper.Close()
+	m.quitting = true
 	return m, tea.Quit
 }
 
@@ -316,6 +335,7 @@ func (m Model) afterStop(next stopNext) (tea.Model, tea.Cmd) {
 	m.stopping = false
 	if next == afterQuit {
 		m.deps.Keeper.Close()
+		m.quitting = true
 		return m, tea.Quit
 	}
 	if m.deps.Tracker != nil {
@@ -330,6 +350,10 @@ func (m Model) afterStop(next stopNext) (tea.Model, tea.Cmd) {
 func (m Model) View() tea.View {
 	var body string
 	switch {
+	case m.quitting:
+		// The last frame: leave the terminal clean.
+	case m.screen == screenServing && m.share == nil && !m.stopping:
+		// Between shares; nothing to draw.
 	case m.stopping:
 		body = "\n " + dimStyle.Render("Stopping…")
 	case m.modal != modalNone:

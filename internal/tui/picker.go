@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -52,6 +53,11 @@ type pickerState struct {
 	entries []string // browse: ".." then subfolder names
 	bcursor int
 
+	off, boff int // first visible list / browse line; moves only when the selection leaves the window
+
+	lastClickRow int // double-click tracking: the list index clicked, not the screen row
+	lastClickAt  time.Time
+
 	input  textinput.Model
 	counts map[string]int // folder → video count (-1: can't scan); absent while counting
 	err    string
@@ -63,6 +69,7 @@ var (
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	selStyle    = lipgloss.NewStyle().Reverse(true)
 	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 )
 
 func newPicker(d Deps) pickerState {
@@ -165,8 +172,6 @@ func (m Model) pickerKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		p.cursor = nextSelectable(p.rows, p.cursor, -1)
 	case "down":
 		p.cursor = nextSelectable(p.rows, p.cursor, 1)
-	case "q":
-		return m.quitNow()
 	case "esc":
 		m.notice = ""
 	case "enter":
@@ -246,7 +251,7 @@ func (m Model) enterDir(dir string) (Model, tea.Cmd) {
 	if dir != string(filepath.Separator) {
 		names = append([]string{".."}, names...)
 	}
-	p.cwd, p.entries, p.bcursor, p.err = dir, names, 0, ""
+	p.cwd, p.entries, p.bcursor, p.boff, p.err = dir, names, 0, 0, ""
 	if len(names) > 1 && names[0] == ".." {
 		p.bcursor = 1 // start on the first real folder
 	}
@@ -305,11 +310,11 @@ func (m Model) typeKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) forwardToInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch {
+	case m.bar.focused: // the command bar, on any screen
+		m.bar.input, cmd = m.bar.input.Update(msg)
 	case m.screen == screenPicker && m.picker.mode == pickType:
 		m.picker.input, cmd = m.picker.input.Update(msg)
 		m.picker.input.SetSuggestions(m.pathSuggestions(m.picker.input.Value()))
-	case m.screen == screenServing && m.bar.focused:
-		m.bar.input, cmd = m.bar.input.Update(msg)
 	}
 	return m, cmd
 }
@@ -368,7 +373,7 @@ func listWindow(total, sel, n int) int {
 
 func (m Model) pickerView() string {
 	p := m.picker
-	var title, footer string
+	var title string
 	var lines []string
 	sel := 0
 	switch p.mode {
@@ -381,11 +386,9 @@ func (m Model) pickerView() string {
 			lines = append(lines, m.pickLine(displayName(name), "", i == p.bcursor))
 		}
 		sel = p.bcursor
-		footer = "enter open · backspace up · s share this folder · esc back"
 	case pickType:
 		title = "Type a path"
 		lines = []string{" " + p.input.View()}
-		footer = "tab completes · enter shares · esc back"
 	default:
 		title = "Pick a folder to share"
 		for i, r := range p.rows {
@@ -405,10 +408,8 @@ func (m Model) pickerView() string {
 			}
 		}
 		sel = p.cursor
-		footer = "↑↓ move · enter select · q quit"
 	}
-	avail := max(m.height-5, 1) // always keep at least the selected row on screen
-	start := listWindow(len(lines), sel, avail)
+	start, avail := m.pickerWindow(len(lines), sel)
 	if len(lines) > avail {
 		lines = lines[start : start+avail]
 	}
@@ -418,10 +419,7 @@ func (m Model) pickerView() string {
 	if p.err != "" {
 		out = append(out, " "+errStyle.Render(p.err))
 	}
-	if m.notice != "" {
-		out = append(out, " "+noticeStyle.Render(m.notice))
-	}
-	out = append(out, " "+dimStyle.Render(footer))
+	out = append(out, m.barLine())
 	return strings.Join(out, "\n")
 }
 
@@ -440,4 +438,80 @@ func (m Model) pickLine(label, note string, selected bool) string {
 		return " " + marker + selStyle.Render(fit(text, w-1))
 	}
 	return " " + marker + fit(text, w-1)
+}
+
+// pickerFirstRow is the screen row of the first list line (after the title and a blank line).
+const pickerFirstRow = 2
+
+// pickerWindow returns the first visible list line and how many fit, for n lines with sel
+// selected. It starts from the stored offset and moves only as far as needed to keep sel in
+// view, so clicking a visible row never scrolls the list under the pointer. The view and mouse
+// clicks both use it, so a click lands on the row that was drawn.
+func (m Model) pickerWindow(n, sel int) (start, avail int) {
+	avail = max(m.height-5, 1) // always keep at least the selected row on screen
+	off := m.picker.off
+	if m.picker.mode == pickBrowse {
+		off = m.picker.boff
+	}
+	if sel < off {
+		off = sel
+	}
+	if sel >= off+avail {
+		off = sel - avail + 1
+	}
+	return max(min(off, max(n-avail, 0)), 0), avail
+}
+
+// syncPickerScroll stores the window pickerWindow settled on, after the selection moved.
+func (m *Model) syncPickerScroll() {
+	p := &m.picker
+	switch p.mode {
+	case pickBrowse:
+		p.boff, _ = m.pickerWindow(len(p.entries), p.bcursor)
+	case pickList:
+		p.off, _ = m.pickerWindow(len(p.rows), p.cursor)
+	}
+}
+
+// pickerClick selects the clicked row; a second click on it within half a second acts like Enter.
+// Headings and dividers ignore clicks.
+func (m Model) pickerClick(c tea.Mouse) (tea.Model, tea.Cmd) {
+	p := &m.picker
+	if c.Button != tea.MouseLeft || p.mode == pickType {
+		return m, nil
+	}
+	n, sel := len(p.rows), p.cursor
+	if p.mode == pickBrowse {
+		n, sel = len(p.entries), p.bcursor
+	}
+	start, avail := m.pickerWindow(n, sel)
+	i := start + c.Y - pickerFirstRow
+	if c.Y < pickerFirstRow || c.Y >= pickerFirstRow+avail || i >= n {
+		return m, nil
+	}
+	if p.mode == pickList && !p.rows[i].selectable() {
+		return m, nil
+	}
+	now := m.deps.Now()
+	double := i == p.lastClickRow && !p.lastClickAt.IsZero() && now.Sub(p.lastClickAt) <= doubleClick
+	if double {
+		p.lastClickAt = time.Time{}
+	} else {
+		p.lastClickRow, p.lastClickAt = i, now
+	}
+	if p.mode == pickBrowse {
+		p.bcursor = i
+	} else {
+		p.cursor = i
+	}
+	m.syncPickerScroll()
+	if double {
+		p.lastClickAt = time.Time{}
+		nm, cmd := m.pickerKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+		mm := nm.(Model)
+		mm.picker.lastClickAt = time.Time{} // a new folder is a new list
+		mm.syncPickerScroll()
+		return mm, cmd
+	}
+	return m, nil
 }
